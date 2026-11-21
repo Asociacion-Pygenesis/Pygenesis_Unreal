@@ -1,0 +1,16 @@
+{
+  "_meta": {"source": "testunreal1.md Ollama", "prompt": "BeginPlay Delay 2s Print Listo"},
+  "raw": {
+    "graph_name": "BP_Launcher",
+    "nodes": [
+      {"id": "1", "type": "Event_BeginPlay", "name": "", "inputs": [], "outputs": []},
+      {"id": "2", "type": "Delay_02Sec", "name": "Espera de inicio", "inputs": ["1"], "outputs": []},
+      {"id": "3", "type": "PrintString", "name": "Listo!", "inputs": ["2"], "outputs": []}
+    ]
+  },
+  "expect": {
+    "names": ["EventBeginPlay", "Delay", "PrintString"],
+    "duration": 2.0,
+    "print": "Listo!"
+  }
+}

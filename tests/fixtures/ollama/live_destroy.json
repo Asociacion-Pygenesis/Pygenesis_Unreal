@@ -1,0 +1,14 @@
+{
+  "_meta": {"source": "testunreal1.md Ollama", "prompt": "BeginPlay DestroyActor"},
+  "raw": {
+    "graph_name": "BP_DestroyOnStart",
+    "nodes": [
+      {"id": "1", "type": "Event_BeginPlay", "name": "", "inputs": [], "outputs": []},
+      {"id": "2", "type": "Destroy Actor", "name": "Destruir objeto", "inputs": ["1"], "outputs": []}
+    ]
+  },
+  "expect": {
+    "names": ["EventBeginPlay", "DestroyActor"],
+    "types": ["Event", "FunctionCall"]
+  }
+}

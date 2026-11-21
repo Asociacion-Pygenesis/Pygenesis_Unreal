@@ -1,0 +1,1081 @@
+"""Backend FastAPI para Pygenesis UnrealExpert AI (inferencia local GGUF + RAG opcional)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import pickle
+import re
+import sys
+import threading
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+import inference
+from page_context import (
+    PAGE_LABELS,
+    ContextAnalysis,
+    analizar_modo_contexto,
+    pagina_para_revision,
+)
+from response_filters import (
+    explicacion_determinista,
+    limpiar_respuesta_followup,
+    limpiar_respuesta_modelo,
+    should_stop_generation,
+    truncate_repetition,
+)
+from unreal_system import UNREAL_SYSTEM
+from unreal_system_compact import (
+    UNREAL_SYSTEM_BP,
+    UNREAL_SYSTEM_FOLLOWUP,
+    UNREAL_SYSTEM_LIGHT,
+)
+
+BACKEND_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = BACKEND_ROOT.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from middleware.bp_complete import is_syntactically_truncated  # noqa: E402
+from middleware.bp_lite import prepare_apply_payload  # noqa: E402
+
+VECTOR_DIR = BACKEND_ROOT / "vectorstore"
+
+embedder = None
+indice = None
+fragmentos: list[dict] = []
+_startup_state = {"phase": "starting", "detail": "Inicializando"}
+
+# Llama 3.1 Instruct tokens (evitar literales completos en una sola cadena).
+_EOT = "<|" + "eot_id|>"
+_BEGIN = "<|" + "begin_of_text|>"
+
+
+def _json_body_for_continue(text: str) -> str:
+    """Extrae el cuerpo JSON (posiblemente truncado) para un turno de continuación."""
+    t = (text or "").strip()
+    if not t:
+        return ""
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", t, re.IGNORECASE)
+    if fence:
+        t = fence.group(1).strip()
+    start = t.find("{")
+    if start < 0:
+        return ""
+    return t[start:].rstrip()
+
+
+def _build_bp_continue_prompt(user_prompt: str, partial_json: str) -> str:
+    """Segundo turno: cerrar/continuar el JSON sin repetir desde cero."""
+    partial = (partial_json or "").strip()
+    return "".join(
+        [
+            _BEGIN,
+            _llama_turn(
+                "system",
+                UNREAL_SYSTEM_BP
+                + "\nEl JSON anterior quedó incompleto. Continúa SOLO el JSON "
+                "desde donde cortó (puedes reemitir el objeto completo válido). "
+                "Sin prosa. Un solo objeto cerrado.",
+            ),
+            _llama_turn(
+                "user",
+                f"Petición original:\n{user_prompt.strip()}\n\n"
+                f"JSON incompleto (continúa/cierra):\n{partial}",
+            ),
+            "<|start_header_id|>assistant<|end_header_id|>\n\n",
+        ]
+    )
+
+
+def _llama_turn(role: str, content: str) -> str:
+    return f"<|start_header_id|>{role}<|end_header_id|>\n\n{content}{_EOT}"
+
+
+def _cargar_rag() -> None:
+    global embedder, indice, fragmentos
+    indice_path = VECTOR_DIR / "indice.faiss"
+    fragmentos_path = VECTOR_DIR / "fragmentos.pkl"
+    if not indice_path.is_file() or not fragmentos_path.is_file():
+        print("RAG no disponible (falta vectorstore/). El backend funcionará sin contexto.")
+        return
+
+    try:
+        import faiss
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        print(f"RAG omitido (dependencias no instaladas): {exc}")
+        return
+
+    print("Cargando base de conocimiento...")
+    _startup_state.update({"phase": "loading_rag", "detail": "Cargando RAG"})
+    embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    indice = faiss.read_index(str(indice_path))
+    with open(fragmentos_path, "rb") as f:
+        fragmentos = pickle.load(f)
+    print(f"Base cargada: {len(fragmentos)} fragmentos")
+
+
+def _startup_worker() -> None:
+    try:
+        _cargar_rag()
+        _startup_state.update({"phase": "loading_model", "detail": "Cargando modelo GGUF"})
+        try:
+            inference.load_model()
+        except RuntimeError as exc:
+            print(f"AVISO: {exc}")
+        status = inference.get_status()
+        if status.get("loaded"):
+            _startup_state.update({"phase": "ready", "detail": "Listo"})
+        else:
+            _startup_state.update(
+                {
+                    "phase": "degraded",
+                    "detail": status.get("error") or "Modelo no cargado",
+                }
+            )
+    except Exception as exc:  # noqa: BLE001 — no tumbar el proceso del puente
+        print(f"ERROR en arranque en segundo plano: {exc}")
+        _startup_state.update({"phase": "error", "detail": str(exc)})
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    _startup_state.update({"phase": "starting", "detail": "Arranque en segundo plano"})
+    worker = threading.Thread(target=_startup_worker, name="pygenesis-unreal-startup", daemon=True)
+    worker.start()
+    yield
+    inference.unload_model()
+
+
+app = FastAPI(title="Pygenesis UnrealExpert AI Backend", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class Consulta(BaseModel):
+    prompt: str
+    contexto_proyecto: str = ""
+    modo_json: bool = False
+    # Última respuesta del asistente (follow-ups: "cómo usarlo")
+    ultima_respuesta: str = ""
+
+
+def buscar_contexto(pregunta: str, top_k: int = 3) -> list:
+    if embedder is None or indice is None:
+        return []
+    embedding = embedder.encode([pregunta]).astype("float32")
+    distancias, indices = indice.search(embedding, top_k)
+    resultados = []
+    for i, idx in enumerate(indices[0]):
+        if idx != -1 and distancias[0][i] < 2.0:
+            resultados.append(fragmentos[idx])
+    return resultados
+
+
+_REVIEW_QUESTION_RE = re.compile(
+    r"(?:"
+    r"qu[eé]\s+(?:deber[ií]a|tengo\s+que|conviene|hay\s+que)\s+revisar"
+    r"|qu[eé]\s+revisar"
+    r"|revisar\s+(?:en|aqu[ií]|ac[aá])"
+    r"|por\s+d[oó]nde\s+(?:empiezo|empezar|arrancar)"
+    r"|checklist"
+    r"|qu[eé]\s+mirar"
+    r")",
+    re.IGNORECASE,
+)
+
+_PAGE_HINTS: dict[str, str] = {
+    "blueprints": "Prioriza Event Graph, nodos BP-Lite, eventos, variables y flujo de ejecución.",
+    "lighting": "Prioriza Directional/Sky Light, fog, Post Process y presets Lighting-Spec.",
+    "materials": "Prioriza Material Editor, PBR, instancias y Nanite cuando aplique.",
+    "niagara": "Prioriza emitters, módulos y rendimiento de sistemas de partículas.",
+    "sequencer": "Prioriza Level Sequences, tracks de cámara y cine.",
+    "cplusplus": "Prioriza UCLASS, lifecycle, Garbage Collection y módulos del proyecto.",
+    "performance": "Prioriza profiling, LODs, Nanite/Lumen cost y scalability.",
+}
+
+_PAGE_REVIEW_HINTS: dict[str, str] = {
+    "blueprints": (
+        "El usuario pide una REVISIÓN de Blueprints. Checklist 5-8 puntos: "
+        "eventos de entrada, casts, referencias hard, ticks innecesarios, "
+        "replicación si multiplayer, y claridad del grafo."
+    ),
+    "lighting": (
+        "El usuario pide una REVISIÓN de iluminación. Checklist: intensidad/temperatura, "
+        "skylight, fog volumétrico, exposure, bloom y coherencia Lumen."
+    ),
+    "performance": (
+        "El usuario pide una REVISIÓN de rendimiento. Checklist: stat unit, draw calls, "
+        "sombras, Lumen/Nanite, LODs y presupuesto de CPU/GPU."
+    ),
+}
+
+
+def _es_pregunta_revision(prompt: str) -> bool:
+    return bool(_REVIEW_QUESTION_RE.search(prompt))
+
+
+def _detectar_pagina(contexto_proyecto: str) -> str | None:
+    """Lee líneas tipo 'Área activa: Blueprints' o 'Modo editor: Lighting'."""
+    mapping = {
+        "blueprints": "blueprints",
+        "blueprint": "blueprints",
+        "lighting": "lighting",
+        "iluminacion": "lighting",
+        "iluminación": "lighting",
+        "materials": "materials",
+        "materiales": "materials",
+        "niagara": "niagara",
+        "sequencer": "sequencer",
+        "c++": "cplusplus",
+        "cplusplus": "cplusplus",
+        "performance": "performance",
+        "rendimiento": "performance",
+    }
+    for line in contexto_proyecto.splitlines():
+        line = line.strip()
+        lower = line.lower()
+        if lower.startswith(("área activa:", "area activa:", "modo editor:", "contexto:")):
+            label = line.split(":", 1)[1].strip().lower()
+            return mapping.get(label, label)
+    return None
+
+
+def _bloque_contexto_plugin(contexto_proyecto: str, analysis: ContextAnalysis) -> str:
+    pagina = analysis.pagina_activa
+    hint = _PAGE_HINTS.get(pagina or "", "")
+    base_info = contexto_proyecto.strip()
+
+    if analysis.mode == "mismatch":
+        tema = analysis.tema_pregunta or ""
+        tema_label = PAGE_LABELS.get(tema, tema)
+        activa_label = PAGE_LABELS.get(pagina or "", pagina or "Desconocido")
+        bloque = (
+            "Contexto desde el plugin Pygenesis (Unreal Editor).\n"
+            f"El usuario está en {activa_label} pero pregunta sobre {tema_label}.\n"
+            f"IMPORTANTE: responde sobre {tema_label} como pregunta de conocimiento general.\n"
+            "NO digas que necesitas otro panel para responder.\n\n"
+            f"{base_info}"
+        )
+        tema_hint = _PAGE_HINTS.get(tema, "")
+        if tema_hint:
+            bloque += f"\n\nEnfoque de la respuesta ({tema_label}):\n{tema_hint}"
+        return bloque
+
+    if analysis.mode == "general":
+        return (
+            "Contexto desde el plugin Pygenesis (Unreal Editor).\n"
+            "El usuario trabaja en el proyecto indicado abajo.\n"
+            "Responde la pregunta directamente; no la limites solo al área activa "
+            "salvo que sea relevante.\n\n"
+            f"{base_info}"
+        )
+
+    bloque = (
+        "Contexto en tiempo real desde el plugin Pygenesis (Unreal Editor).\n"
+        "Adapta la respuesta al área activa indicada abajo cuando sea relevante.\n"
+        "Si el usuario dice 'aquí' o 'este nivel', usa el contexto actual.\n\n"
+        f"{base_info}"
+    )
+    if hint:
+        bloque += f"\n\nEnfoque para esta área:\n{hint}"
+    return bloque
+
+
+def _bloque_revision(pagina: str | None, prompt: str) -> str:
+    if not _es_pregunta_revision(prompt):
+        return ""
+    review = _PAGE_REVIEW_HINTS.get(pagina or "")
+    if not review:
+        return (
+            "El usuario pide qué revisar en el área activa. "
+            "Responde con un checklist priorizado de 5-8 puntos, "
+            "no con un tutorial de una sola herramienta."
+        )
+    return review
+
+
+_GREETING_RE = re.compile(
+    r"^\s*(?:"
+    r"hola+|hey+|hi+|hello+|buenas(?:\s+tardes|\s+noches|\s+d[ií]as)?|"
+    r"qu[eé]\s+tal|c[oó]mo\s+est[aá]s|gracias|thanks|"
+    r"qu[eé]\s+puedes\s+hacer|qui[eé]n\s+eres|help"
+    r")\s*[!?.]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _es_saludo_o_casual(prompt: str) -> bool:
+    text = (prompt or "").strip()
+    if len(text) <= 40 and _GREETING_RE.match(text):
+        return True
+    return False
+
+
+def _es_afirmacion_corta(prompt: str) -> bool:
+    """Sí / vale / ok tras la pregunta '¿Quieres que te explique…?'."""
+    t = (prompt or "").strip().lower()
+    if not t or len(t) > 48:
+        return False
+    return bool(
+        re.fullmatch(
+            r"(?:"
+            r"s[ií]"
+            r"|s[ií]\s+por\s+favor"
+            r"|vale"
+            r"|ok"
+            r"|okay"
+            r"|claro"
+            r"|dale"
+            r"|yes"
+            r"|yep"
+            r"|de\s+acuerdo"
+            r"|por\s+favor"
+            r"|expl[ií]ca(?:me)?"
+            r"|quiero(?:\s+la)?\s+explicaci[oó]n"
+            r")\.?",
+            t,
+        )
+    )
+
+
+def _prev_tiene_json_estructurado(prev: str) -> bool:
+    p = prev or ""
+    return '"graph_name"' in p or '"environment_type"' in p
+
+
+def _es_pregunta_tema_nuevo(prompt: str) -> bool:
+    """
+    Pregunta de concepto nueva (no «explícame lo anterior»).
+    Evita que «Explica la diferencia entre Sky Light…» dispare la explicación
+    determinista del último BP-Lite.
+    """
+    p = (prompt or "").strip()
+    if not p:
+        return False
+    if re.search(
+        r"(?:"
+        r"expl[ií]ca(?:me)?\s+(?:la\s+)?(?:diferencia|ventaja|relaci[oó]n|distinci[oó]n)"
+        r"|expl[ií]ca(?:me)?\s+(?:qu[eé]\s+es|c[oó]mo\s+funciona|por\s+qu[eé])"
+        r"|diferencia\s+entre"
+        r"|qu[eé]\s+(?:diferencia|es|significa)\s+"
+        r"|c[oó]mo\s+funciona\s+"
+        r")",
+        p,
+        re.IGNORECASE,
+    ):
+        return True
+    # «Explica <tema largo>» sin deícticos al turno anterior
+    if re.search(r"^expl[ií]ca(?:me)?\s+\S+", p, re.IGNORECASE):
+        if not re.search(
+            r"\b(?:"
+            r"esto|eso|lo\s+anterior|el\s+resultado|"
+            r"el\s+(?:blueprint|grafo|json|bp)|"
+            r"c[oó]mo\s+(?:usarlo|aplicarlo|probarlo)|"
+            r"m[aá]s\s+(?:detalle|detalles)"
+            r")\b",
+            p,
+            re.IGNORECASE,
+        ):
+            if len(re.findall(r"\w+", p, flags=re.UNICODE)) >= 6:
+                return True
+    return False
+
+
+def _es_seguimiento_uso(prompt: str, prev: str = "") -> bool:
+    """Follow-up: sí / explícame esto / cómo usarlo — solo tras JSON BP/luz previo."""
+    if not prompt:
+        return False
+    if _es_pregunta_tema_nuevo(prompt):
+        return False
+    if _es_afirmacion_corta(prompt) and _prev_tiene_json_estructurado(prev):
+        return True
+    # Sin JSON previo no hay «explicación del grafo» que reutilizar
+    if not _prev_tiene_json_estructurado(prev):
+        return False
+    return bool(
+        re.search(
+            r"(?:"
+            r"expl[ií]ca(?:me)?(?:\s+(?:esto|eso|lo\s+anterior|el\s+blueprint|m[aá]s))?\s*$"
+            r"|expl[ií]ca(?:me)?\s+(?:c[oó]mo\s+)?(?:usarlo|aplicarlo|probarlo)"
+            r"|c[oó]mo\s+(?:lo\s+)?(?:uso|usar|aplico|aplicar|pruebo|probar)"
+            r"|c[oó]mo\s+usarlo"
+            r"|qu[eé]\s+(?:hago|hago\s+ahora|sigo)"
+            r"|para\s+qu[eé]\s+sirve"
+            r"|no\s+entiendo"
+            r"|detalla(?:me)?(?:\s+esto)?\s*$"
+            r"|quiero(?:\s+que)?\s+(?:me\s+)?expliqu"
+            r")",
+            prompt,
+            re.IGNORECASE,
+        )
+    )
+
+
+_LIGHTING_INTENT_RE = re.compile(
+    r"\b(?:iluminaci[oó]n|lighting|atm[oó]sfera|niebla|fog|lumen|"
+    r"post\s*process|directional\s*light|sky\s*light|atardecer|"
+    r"cyberpunk|noche|bosque|luna|preset\s+de\s+luz|"
+    r"cubemap|realtime\s*capture)\b",
+    re.IGNORECASE,
+)
+_GRAPH_INTENT_RE = re.compile(
+    r"\b(?:crea|crear|monta|genera|blueprint|bp-lite|launchcharacter|"
+    r"event\s*graph|nodo|jump|grafo|printstring|pulsar|tecla)\b",
+    re.IGNORECASE,
+)
+_GENERA_LIGHTING_RE = re.compile(
+    r"\b(?:configura|configurar|crea|crear|monta|genera|aplicar|aplica|"
+    r"preset|ajusta|ajustar|pon(?:me)?|haz(?:me)?)\b",
+    re.IGNORECASE,
+)
+
+
+def _pide_json_lighting(prompt: str) -> bool:
+    """True solo si pide generar/aplicar Lighting-Spec, no si pregunta concepto."""
+    if not prompt or _es_pregunta_tema_nuevo(prompt):
+        return False
+    if not _LIGHTING_INTENT_RE.search(prompt):
+        return False
+    # «explica / diferencia / qué es» ya filtrado; exige verbo de acción o preset
+    if _GENERA_LIGHTING_RE.search(prompt):
+        return True
+    # Frases tipo «iluminación de atardecer…» sin «explica»
+    if re.search(
+        r"\b(?:iluminaci[oó]n|lighting|atm[oó]sfera|preset)\b",
+        prompt,
+        re.IGNORECASE,
+    ) and not re.search(
+        r"\b(?:expl[ií]ca|diferencia|qu[eé]\s+es|c[oó]mo\s+funciona)\b",
+        prompt,
+        re.IGNORECASE,
+    ):
+        return True
+    return False
+
+
+def _pide_json_bp(prompt: str) -> bool:
+    if not prompt or _es_pregunta_tema_nuevo(prompt):
+        return False
+    return bool(_GRAPH_INTENT_RE.search(prompt))
+
+
+def construir_prompt(consulta: Consulta, contexto_rag: list) -> str:
+    if _es_saludo_o_casual(consulta.prompt):
+        parts = [
+            _BEGIN,
+            _llama_turn("system", UNREAL_SYSTEM),
+            _llama_turn(
+                "system",
+                "El usuario solo saluda o habla de forma casual. "
+                "Responde en 1 o 2 frases amables en español. "
+                "NO generes JSON. NO menciones BP-Lite, Lighting-Spec ni tus reglas internas. "
+                "NO repitas el saludo ni copies instrucciones del sistema.",
+            ),
+            _llama_turn("user", consulta.prompt.strip()),
+            "<|start_header_id|>assistant<|end_header_id|>\n\n",
+        ]
+        return "".join(parts)
+
+    prev = (consulta.ultima_respuesta or "").strip()
+    if prev and len(prev) > 1200:
+        prev = prev[:1200] + "\n…"
+
+    # Follow-up / "sí" tras JSON+pregunta (explicación bajo demanda)
+    if _es_seguimiento_uso(consulta.prompt, prev) and prev:
+        user_block = (
+            f"Respuesta anterior del asistente:\n{prev}\n\n"
+            f"El usuario quiere la explicación (dijo: {consulta.prompt.strip()}).\n"
+            "Responde SOLO con pasos numerados. PROHIBIDO JSON."
+        )
+        return "".join(
+            [
+                _BEGIN,
+                _llama_turn("system", UNREAL_SYSTEM_FOLLOWUP),
+                _llama_turn("user", user_block),
+                # Priming: evita que el modelo empiece repitiendo el JSON
+                "<|start_header_id|>assistant<|end_header_id|>\n\n"
+                "1.",
+            ]
+        )
+    if _es_seguimiento_uso(consulta.prompt, prev) and not prev:
+        return "".join(
+            [
+                _BEGIN,
+                _llama_turn(
+                    "system",
+                    UNREAL_SYSTEM_FOLLOWUP
+                    + " No hay respuesta anterior: pide al usuario que aclare "
+                    "si habla de un Blueprint o de iluminación. NO inventes JSON.",
+                ),
+                _llama_turn("user", consulta.prompt.strip()),
+                "<|start_header_id|>assistant<|end_header_id|>\n\n",
+            ]
+        )
+
+    # Concepto / diferencia / qué es → texto, NUNCA Lighting-Spec ni BP-Lite
+    if _es_pregunta_tema_nuevo(consulta.prompt):
+        return "".join(
+            [
+                _BEGIN,
+                _llama_turn(
+                    "system",
+                    "Eres Pygenesis UnrealExpert AI (UE5). Responde en español.\n"
+                    "El usuario pide una EXPLICACIÓN de concepto. "
+                    "Responde solo con texto claro y conciso (qué es / diferencias / cuándo usar).\n"
+                    "PROHIBIDO JSON, BP-Lite, Lighting-Spec, fences ``` y pasos de Aplicar.",
+                ),
+                _llama_turn("user", consulta.prompt.strip()),
+                "<|start_header_id|>assistant<|end_header_id|>\n\n",
+            ]
+        )
+
+    wants_lighting_early = _pide_json_lighting(consulta.prompt)
+    wants_graph_early = _pide_json_bp(consulta.prompt)
+    # Prompt corto = primer token mucho antes (evita 2–3 min de prefilling en silencio)
+    if wants_lighting_early and not _es_pregunta_revision(consulta.prompt):
+        return "".join(
+            [
+                _BEGIN,
+                _llama_turn("system", UNREAL_SYSTEM_LIGHT),
+                _llama_turn("user", consulta.prompt.strip()),
+                "<|start_header_id|>assistant<|end_header_id|>\n\n",
+            ]
+        )
+    if wants_graph_early and not _es_pregunta_revision(consulta.prompt):
+        # Sin priming de '{': el modelo (como en Ollama) emite el objeto completo;
+        # forzar '{"graph_name":"' provocaba JSON a medias con campos "".
+        return "".join(
+            [
+                _BEGIN,
+                _llama_turn("system", UNREAL_SYSTEM_BP),
+                _llama_turn("user", consulta.prompt.strip()),
+                "<|start_header_id|>assistant<|end_header_id|>\n\n",
+            ]
+        )
+
+    system = UNREAL_SYSTEM + "\n\nNo cites fuentes ni añadas prefijos tipo [Fuente: ...]."
+    parts = [_BEGIN, _llama_turn("system", system)]
+
+    pagina = _detectar_pagina(consulta.contexto_proyecto)
+    es_revision = _es_pregunta_revision(consulta.prompt)
+    analysis = analizar_modo_contexto(
+        consulta.prompt,
+        pagina,
+        es_revision=es_revision,
+    )
+
+    if consulta.contexto_proyecto.strip():
+        parts.append(_llama_turn("system", _bloque_contexto_plugin(consulta.contexto_proyecto, analysis)))
+
+    pagina_revision = pagina_para_revision(analysis, consulta.prompt, es_revision)
+    revision = _bloque_revision(pagina_revision, consulta.prompt)
+    if revision:
+        parts.append(_llama_turn("system", revision))
+
+    if contexto_rag:
+        ejemplos = ""
+        for i, frag in enumerate(contexto_rag):
+            ejemplos += (
+                f"\nEjemplo {i + 1}:\nPregunta: {frag['pregunta']}\n"
+                f"Respuesta: {frag['respuesta']}\n"
+            )
+        parts.append(_llama_turn("system", f"Ejemplos de referencia:\n{ejemplos}"))
+
+    wants_lighting = _pide_json_lighting(consulta.prompt)
+    if wants_lighting:
+        parts.append(
+            _llama_turn(
+                "system",
+                "El usuario pide iluminación/atmósfera. Responde PRIMERO con JSON Lighting-Spec "
+                "completo (environment_type, directional_light, sky_light, exponential_fog, "
+                "post_process) en un fence ```json. Después máximo 3 frases. Sin JSON no sirve Aplicar Lighting.",
+            )
+        )
+    wants_graph_prompt = _pide_json_bp(consulta.prompt)
+    if wants_graph_prompt and not wants_lighting:
+        parts.append(
+            _llama_turn(
+                "system",
+                "El usuario pide Blueprint. PRIMERO un único JSON BP-Lite válido. "
+                "DESPUÉS como máximo un párrafo o 4 pasos numerados. "
+                "NO repitas el JSON ni alargues con checklists enormes. Cuando acabes, PARA.",
+            )
+        )
+
+    user_msg = consulta.prompt
+    if consulta.contexto_proyecto.strip():
+        if analysis.mode == "mismatch":
+            tema_label = PAGE_LABELS.get(analysis.tema_pregunta or "", analysis.tema_pregunta or "")
+            activa_label = PAGE_LABELS.get(analysis.pagina_activa or "", analysis.pagina_activa or "")
+            extra = (
+                f"Responde sobre {tema_label}. El usuario está en {activa_label} "
+                "pero la pregunta es de conocimiento general sobre esa área."
+            )
+        elif analysis.mode == "general":
+            extra = "Responde directamente; usa nivel/actores solo como referencia."
+        elif es_revision:
+            extra = (
+                "Es una pregunta de REVISIÓN/CHECKLIST: lista qué comprobar en el área indicada."
+            )
+        else:
+            extra = (
+                "El usuario pregunta desde Unreal Editor; usa el contexto del system anterior."
+            )
+        user_msg = f"{consulta.prompt}\n\n({extra})"
+
+    parts.append(_llama_turn("user", user_msg))
+    # NUNCA forzar ```json aquí en follow-ups ambiguos (alucinaba Lighting-Spec).
+    # Solo priming de fence si el usuario pidió iluminación explícitamente.
+    if wants_lighting and not _es_seguimiento_uso(consulta.prompt):
+        parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n```json\n")
+    else:
+        parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
+    return "".join(parts)
+
+
+def _ensure_model_ready() -> None:
+    status = inference.get_status()
+    if not status["loaded"]:
+        raise HTTPException(
+            status_code=503,
+            detail=status.get("error") or "Modelo no cargado",
+        )
+
+
+async def _stream_inference_sse(consulta: Consulta):
+    _ensure_model_ready()
+    contexto_rag = buscar_contexto(consulta.prompt, top_k=3)
+    prompt_completo = construir_prompt(consulta, contexto_rag)
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[tuple[str, str | None]] = asyncio.Queue()
+    acumulado = ""
+
+    def worker() -> None:
+        try:
+            for token in inference.generate_stream(
+                prompt_completo, modo_json=consulta.modo_json
+            ):
+                loop.call_soon_threadsafe(queue.put_nowait, ("token", token))
+            loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+        except Exception as exc:
+            loop.call_soon_threadsafe(queue.put_nowait, ("error", str(exc)))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    while True:
+        kind, data = await queue.get()
+        if kind == "token" and data:
+            acumulado += data
+            yield f"data: {json.dumps({'token': data}, ensure_ascii=False)}\n\n"
+        elif kind == "done":
+            texto_limpio = limpiar_respuesta_modelo(
+                acumulado, user_prompt=consulta.prompt
+            )
+            payload = {
+                "done": True,
+                "respuesta": texto_limpio,
+                "fragmentos_usados": len(contexto_rag),
+            }
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            break
+        elif kind == "error":
+            raise RuntimeError(data or "Error de inferencia")
+
+
+@app.post("/consultar")
+async def consultar(consulta: Consulta):
+    _ensure_model_ready()
+    contexto_rag = buscar_contexto(consulta.prompt, top_k=3)
+    prompt_completo = construir_prompt(consulta, contexto_rag)
+
+    texto = await asyncio.to_thread(
+        inference.generate,
+        prompt_completo,
+        modo_json=consulta.modo_json,
+    )
+    texto_limpio = limpiar_respuesta_modelo(texto, user_prompt=consulta.prompt)
+
+    return {
+        "respuesta": texto_limpio,
+        "fragmentos_usados": len(contexto_rag),
+    }
+
+
+# Jobs asíncronos: el plugin Unreal hace POST corto + GET de polling
+# (el HTTP de UE corta conexiones largas a /consultar).
+_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
+
+
+def _run_job(job_id: str, consulta: Consulta) -> None:
+    try:
+        casual = _es_saludo_o_casual(consulta.prompt)
+        conceptual = _es_pregunta_tema_nuevo(consulta.prompt)
+        wants_graph = _pide_json_bp(consulta.prompt)
+        wants_lighting = _pide_json_lighting(consulta.prompt)
+        # RAG alarga el prompt y sesga follow-ups ("cómo usarlo" → ejemplos de lighting).
+        follow = _es_seguimiento_uso(
+            consulta.prompt, consulta.ultima_respuesta or ""
+        )
+        if (
+            casual
+            or conceptual
+            or wants_graph
+            or wants_lighting
+            or consulta.modo_json
+            or follow
+        ):
+            contexto_rag = []
+        else:
+            contexto_rag = buscar_contexto(consulta.prompt, top_k=2)
+
+        with _jobs_lock:
+            job0 = _jobs.get(job_id)
+            if job0 is not None:
+                job0["phase"] = "preparando"
+                job0["respuesta"] = ""
+
+        # «sí» tras BP/Lighting: explicación fija (sin LLM → sin alucinaciones ni cortes)
+        if follow:
+            canned = explicacion_determinista(consulta.ultima_respuesta or "")
+            if canned:
+                with _jobs_lock:
+                    _jobs[job_id] = {
+                        "status": "done",
+                        "phase": "done",
+                        "respuesta": canned,
+                        "fragmentos_usados": 0,
+                        "error": None,
+                    }
+                return
+
+        prompt_completo = construir_prompt(consulta, contexto_rag)
+        if casual:
+            token_budget = 48
+        elif follow:
+            # Explicación bajo demanda (pasos), sin JSON
+            token_budget = 420
+        elif conceptual:
+            token_budget = 420
+        elif wants_graph or wants_lighting or consulta.modo_json:
+            # Alineado a Ollama num_predict (512) + margen A/D → 768
+            from config import OLLAMA_BP_MAX_TOKENS
+
+            token_budget = OLLAMA_BP_MAX_TOKENS
+        else:
+            token_budget = None
+
+        with _jobs_lock:
+            job0 = _jobs.get(job_id)
+            if job0 is not None:
+                job0["phase"] = "generando"
+
+        # Streaming: el poll del plugin lee "respuesta" parcial mientras status=running.
+        # IMPORTANTE: marcar done ANTES de stream.close() — close() puede bloquear
+        # mientras llama-cpp termina el resto de tokens y el plugin hacía timeout.
+        acumulado = ""
+        last_publish_len = 0
+        last_published = ""
+        marked_done = False
+        # GBNF solo en jobs BP (no lighting / follow / casual): JSON de grafo garantizado.
+        use_bp_grammar = bool(
+            wants_graph and not wants_lighting and not follow and not casual
+        )
+
+        def _with_bp_prefix(text: str) -> str:
+            """Envolver JSON crudo en fence para Apply / LastStructuredReply."""
+            t = text or ""
+            if t.lstrip().startswith("```"):
+                return t
+            body = t.lstrip()
+            if not body.startswith("{"):
+                return t
+            if wants_graph and not follow and not casual:
+                closed = body.count("{") <= body.count("}") and body.rstrip().endswith(
+                    "}"
+                )
+                return "```json\n" + body + ("\n```" if closed else "")
+            return t
+
+        # Follow-up NUNCA en modo JSON (si no, repite el grafo en vez de explicar).
+        use_modo_json = (not follow) and (
+            consulta.modo_json or wants_graph or wants_lighting
+        )
+        stream = inference.generate_stream(
+            prompt_completo,
+            modo_json=use_modo_json and not use_bp_grammar,
+            max_tokens=token_budget,
+            use_bp_grammar=use_bp_grammar,
+        )
+
+        def _publish_running(text: str) -> None:
+            nonlocal last_publish_len, last_published
+            with _jobs_lock:
+                job = _jobs.get(job_id)
+                if job is not None and job.get("status") == "running":
+                    job["respuesta"] = text
+                    job["phase"] = "generando"
+            last_publish_len = len(text)
+            last_published = text
+
+        def _mark_done(text: str) -> None:
+            nonlocal marked_done
+            if marked_done:
+                return
+            text = _with_bp_prefix(text)
+            if follow:
+                texto_limpio = limpiar_respuesta_followup(text)
+                # El prompt primea con "1." (no sale en los tokens); reponerlo si falta.
+                if texto_limpio and not re.match(r"^\s*\d+[\.\)]", texto_limpio):
+                    texto_limpio = "1. " + texto_limpio.lstrip()
+            else:
+                texto_limpio = limpiar_respuesta_modelo(
+                    text, user_prompt=consulta.prompt
+                )
+            if not (texto_limpio or "").strip():
+                texto_limpio = (last_published or text or "").strip()
+            # Si el limpio pierde el JSON que el usuario ya vio, recuperar
+            # (solo en el turno del grafo; en follow-up el JSON no debe volver)
+            if (
+                not follow
+                and last_published
+                and '"graph_name"' in last_published
+                and '"graph_name"' not in (texto_limpio or "")
+            ):
+                texto_limpio = (
+                    truncate_repetition(
+                        last_published, user_prompt=consulta.prompt
+                    )
+                    or last_published
+                )
+                texto_limpio = limpiar_respuesta_modelo(
+                    texto_limpio, user_prompt=consulta.prompt
+                )
+            if not (texto_limpio or "").strip() and (text or "").strip():
+                texto_limpio = (
+                    limpiar_respuesta_followup(text) if follow else text.strip()
+                )
+            with _jobs_lock:
+                _jobs[job_id] = {
+                    "status": "done",
+                    "phase": "done",
+                    "respuesta": texto_limpio,
+                    "fragmentos_usados": len(contexto_rag),
+                    "error": None,
+                }
+            marked_done = True
+
+        try:
+            for token in stream:
+                acumulado += token
+                view = _with_bp_prefix(acumulado)
+                # En follow-up no parar por fence JSON (el modelo no debe emitir JSON;
+                # si lo hace, lo limpiamos al final; parar aquí cortaría la explicación).
+                if (not follow) and should_stop_generation(view):
+                    # Publicar versión ya recortada para que el poll no reciba
+                    # un monstruo de repetición (rompe el JSON del plugin) ni vacío.
+                    view = (
+                        truncate_repetition(view, user_prompt=consulta.prompt)
+                        or last_published
+                        or view
+                    )
+                    _publish_running(view)
+                    _mark_done(view)
+                    break
+                # Publicar casi cada token: el plugin necesita parciales frecuentes
+                # o la UI parece “todo de golpe” tras minutos de silencio.
+                if (
+                    len(view) - last_publish_len >= 1
+                    or token.endswith(("\n", " ", ".", ",", "}", "]"))
+                ):
+                    _publish_running(view)
+        finally:
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Continue: JSON BP truncado → un segundo pase corto (sin fabricar nodos).
+        if (
+            not marked_done
+            and wants_graph
+            and not follow
+            and not casual
+            and is_syntactically_truncated(acumulado or "")
+        ):
+            partial = _json_body_for_continue(acumulado)
+            if partial and '"graph_name"' in partial:
+                from config import OLLAMA_BP_CONTINUE_TOKENS
+
+                try:
+                    cont = inference.generate(
+                        _build_bp_continue_prompt(consulta.prompt, partial),
+                        modo_json=True,
+                        max_tokens=OLLAMA_BP_CONTINUE_TOKENS,
+                        use_bp_grammar=False,
+                    )
+                    cont_body = _json_body_for_continue(cont) or (cont or "").strip()
+                    # Preferir continuación si cierra el objeto; si no, intentar merge
+                    if cont_body and not is_syntactically_truncated(cont_body):
+                        acumulado = cont_body
+                    elif cont_body.startswith("{") and cont_body.count(
+                        "}"
+                    ) >= cont_body.count("{"):
+                        acumulado = cont_body
+                    _publish_running(_with_bp_prefix(acumulado))
+                except Exception as cont_exc:  # noqa: BLE001
+                    print(f"[job] continue JSON falló: {cont_exc}")
+
+        if not marked_done:
+            _mark_done(_with_bp_prefix(acumulado or last_published))
+    except Exception as exc:  # noqa: BLE001
+        # Nunca borrar lo ya streameado: el chat del Editor lo mostraba y luego "desaparecía"
+        with _jobs_lock:
+            prev = _jobs.get(job_id) or {}
+            prev_resp = (prev.get("respuesta") or "").strip()
+            if prev_resp:
+                _jobs[job_id] = {
+                    "status": "done",
+                    "respuesta": prev_resp,
+                    "fragmentos_usados": int(prev.get("fragmentos_usados") or 0),
+                    "error": None,
+                }
+            else:
+                _jobs[job_id] = {
+                    "status": "error",
+                    "respuesta": None,
+                    "fragmentos_usados": 0,
+                    "error": str(exc),
+                }
+
+
+@app.post("/consultar/async")
+async def consultar_async(consulta: Consulta):
+    """Encola la inferencia y devuelve job_id de inmediato (<1 s)."""
+    _ensure_model_ready()
+    job_id = uuid.uuid4().hex
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "status": "running",
+            "phase": "encolado",
+            "respuesta": "",
+            "fragmentos_usados": 0,
+            "error": None,
+        }
+    threading.Thread(
+        target=_run_job,
+        args=(job_id, consulta),
+        name=f"pygenesis-job-{job_id[:8]}",
+        daemon=True,
+    ).start()
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get("/consultar/job/{job_id}")
+async def consultar_job(job_id: str):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job_id desconocido")
+    return {"job_id": job_id, **job}
+
+
+@app.post("/consultar/stream")
+async def consultar_stream(consulta: Consulta):
+    return StreamingResponse(
+        _stream_inference_sse(consulta),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+class AplicarBpLiteRequest(BaseModel):
+    texto: str = ""
+    graph: dict[str, Any] | None = None
+    asset_path: str = "/Game/Pygenesis"
+
+
+@app.post("/aplicar/bp-lite")
+async def aplicar_bp_lite(req: AplicarBpLiteRequest):
+    """Normaliza BP-Lite desde texto/grafo y devuelve script Python + guía."""
+    source: str | dict[str, Any]
+    if req.graph:
+        source = req.graph
+    else:
+        source = req.texto
+    result = prepare_apply_payload(source)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "BP-Lite invalido")
+    # Regenerar script con asset_path pedido
+    from middleware.bp_lite import bplite_to_apply_script
+
+    graph = result["graph"]
+    result["script"] = bplite_to_apply_script(graph, asset_path=req.asset_path or "/Game/Pygenesis")
+    result["asset_path"] = req.asset_path or "/Game/Pygenesis"
+    return result
+
+
+class AplicarLightingRequest(BaseModel):
+    texto: str = ""
+    spec: dict[str, Any] | None = None
+
+
+@app.post("/aplicar/lighting-spec")
+async def aplicar_lighting_spec(req: AplicarLightingRequest):
+    """Normaliza Lighting-Spec desde texto/spec y lo devuelve listo para el Editor."""
+    from middleware.lighting import prepare_lighting_payload
+
+    source: str | dict[str, Any]
+    if req.spec:
+        source = req.spec
+    else:
+        source = req.texto
+    result = prepare_lighting_payload(source)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Lighting-Spec invalido")
+    return result
+
+
+@app.get("/health")
+async def health():
+    model_status = inference.get_status()
+    ok = model_status["loaded"]
+    phase = _startup_state.get("phase") or "unknown"
+    if ok:
+        status = "ok"
+    elif phase in {"starting", "loading_rag", "loading_model"}:
+        status = "starting"
+    else:
+        status = "degraded"
+    return {
+        "status": status,
+        "modelo": model_status["modelo"],
+        "backend": model_status["backend"],
+        "model_path": model_status["model_path"],
+        "model_loaded": ok,
+        "startup_phase": phase,
+        "startup_detail": _startup_state.get("detail"),
+        "fragmentos": len(fragmentos),
+        "rag_activo": embedder is not None,
+        "error": model_status.get("error")
+        or (_startup_state.get("detail") if phase == "error" else None),
+    }

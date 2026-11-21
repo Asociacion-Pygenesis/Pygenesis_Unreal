@@ -1,0 +1,27 @@
+{
+  "_meta": {
+    "prompt": "bosque noche luna niebla densa volumétrica",
+    "style": "lighting_canonical"
+  },
+  "raw": {
+    "environment_type": "Misty Night Forest",
+    "directional_light": {
+      "intensity": 0.8,
+      "temperature": 8500,
+      "rotation": [-60.0, 45.0, 0.0],
+      "cast_shadows": true
+    },
+    "sky_light": {"intensity": 0.6, "realtime_capture": true},
+    "exponential_fog": {
+      "density": 0.08,
+      "height_falloff": 0.15,
+      "inscattering_color": [0.02, 0.05, 0.12],
+      "volumetric_fog": true
+    },
+    "post_process": {
+      "exposure_compensation": -1.0,
+      "bloom_intensity": 0.5,
+      "vignette_intensity": 0.6
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "_meta": {"source": "testunreal1.md Ollama", "prompt": "Espacio LaunchCharacter"},
+  "raw": {
+    "graph_name": "BP_Jump",
+    "nodes": [
+      {"id": "1", "type": "Event_InputAction_Spacebar", "name": "", "inputs": [], "outputs": []},
+      {"id": "2", "type": "Launch Character", "name": "Saltar hacia arriba", "inputs": ["1"], "outputs": []}
+    ]
+  },
+  "expect": {
+    "names": ["SpaceBar", "LaunchCharacter"],
+    "types": ["InputKey", "FunctionCall"],
+    "src_pin": "Pressed"
+  }
+}

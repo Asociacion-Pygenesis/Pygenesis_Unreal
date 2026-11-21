@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Lighting-Spec",
+  "type": "object",
+  "properties": {
+    "environment_type": { "type": "string" },
+    "directional_light": { "type": "object" },
+    "sky_light": { "type": "object" },
+    "exponential_fog": { "type": "object" },
+    "post_process": { "type": "object" }
+  }
+}

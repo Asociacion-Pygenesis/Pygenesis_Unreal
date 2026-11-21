@@ -1,0 +1,29 @@
+{
+  "_meta": {
+    "prompt": "tecla W AddMovementInput adelante",
+    "style": "canonical"
+  },
+  "raw": {
+    "graph_name": "MoveOnW",
+    "nodes": [
+      {
+        "id": "node_01",
+        "type": "InputKey",
+        "name": "W",
+        "inputs": {},
+        "outputs": {"Pressed": "node_02.exec_in"}
+      },
+      {
+        "id": "node_02",
+        "type": "FunctionCall",
+        "name": "AddMovementInput",
+        "inputs": {
+          "exec_in": "node_01.Pressed",
+          "WorldDirectionVector": [1.0, 0.0, 0.0],
+          "ScaleValue": 1.0
+        },
+        "outputs": {}
+      }
+    ]
+  }
+}

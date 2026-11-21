@@ -1,0 +1,36 @@
+{
+  "_meta": {
+    "prompt": "F Pressed/Released prints",
+    "style": "canonical_pins"
+  },
+  "raw": {
+    "graph_name": "KeyReleased",
+    "nodes": [
+      {
+        "id": "node_01",
+        "type": "InputKey",
+        "name": "F",
+        "inputs": {},
+        "outputs": {
+          "Pressed": "node_02.exec_in",
+          "Released": "node_03.exec_in"
+        }
+      },
+      {
+        "id": "node_02",
+        "type": "FunctionCall",
+        "name": "PrintString",
+        "inputs": {"exec_in": "node_01.Pressed", "InString": "down"},
+        "outputs": {}
+      },
+      {
+        "id": "node_03",
+        "type": "FunctionCall",
+        "name": "PrintString",
+        "inputs": {"exec_in": "node_01.Released", "InString": "up"},
+        "outputs": {}
+      }
+    ]
+  },
+  "preserve_output_pins": ["Pressed", "Released"]
+}

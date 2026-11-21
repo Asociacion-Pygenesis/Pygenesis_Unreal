@@ -1,0 +1,30 @@
+{
+  "_meta": {
+    "prompt": "Espacio LaunchCharacter (0,0,700)",
+    "style": "canonical"
+  },
+  "raw": {
+    "graph_name": "JumpOnSpace",
+    "nodes": [
+      {
+        "id": "node_01",
+        "type": "InputKey",
+        "name": "SpaceBar",
+        "inputs": {},
+        "outputs": {"Pressed": "node_02.exec_in"}
+      },
+      {
+        "id": "node_02",
+        "type": "FunctionCall",
+        "name": "LaunchCharacter",
+        "inputs": {
+          "exec_in": "node_01.Pressed",
+          "LaunchVelocity": [0.0, 0.0, 700.0],
+          "XYOverride": true,
+          "ZOverride": true
+        },
+        "outputs": {}
+      }
+    ]
+  }
+}

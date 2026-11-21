@@ -1,0 +1,27 @@
+{
+  "_meta": {
+    "prompt": "estudio limpio sin niebla 6500K",
+    "style": "lighting_canonical"
+  },
+  "raw": {
+    "environment_type": "Clean Studio",
+    "directional_light": {
+      "intensity": 5.0,
+      "temperature": 6500,
+      "rotation": [-45.0, 30.0, 0.0],
+      "cast_shadows": true
+    },
+    "sky_light": {"intensity": 1.0, "realtime_capture": true},
+    "exponential_fog": {
+      "density": 0.0,
+      "height_falloff": 0.2,
+      "inscattering_color": [0.45, 0.64, 1.0],
+      "volumetric_fog": false
+    },
+    "post_process": {
+      "exposure_compensation": 0.0,
+      "bloom_intensity": 0.675,
+      "vignette_intensity": 0.2
+    }
+  }
+}

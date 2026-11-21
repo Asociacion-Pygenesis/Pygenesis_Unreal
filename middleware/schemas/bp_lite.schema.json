@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BP-Lite",
+  "type": "object",
+  "required": ["graph_name", "nodes"],
+  "properties": {
+    "graph_name": { "type": "string" },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "name"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": { "type": "string" },
+          "name": { "type": "string" },
+          "inputs": { "type": "object" },
+          "outputs": { "type": "object" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "prompt": "ActorBeginOverlap → Print Overlap",
+    "style": "canonical"
+  },
+  "raw": {
+    "graph_name": "OverlapPrint",
+    "nodes": [
+      {
+        "id": "node_01",
+        "type": "Event",
+        "name": "EventActorBeginOverlap",
+        "inputs": {},
+        "outputs": {"exec_out": "node_02.exec_in"}
+      },
+      {
+        "id": "node_02",
+        "type": "FunctionCall",
+        "name": "PrintString",
+        "inputs": {"exec_in": "node_01.exec_out", "InString": "Overlap"},
+        "outputs": {}
+      }
+    ]
+  }
+}

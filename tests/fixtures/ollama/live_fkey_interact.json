@@ -1,0 +1,16 @@
+{
+  "_meta": {"source": "testunreal1.md Ollama", "prompt": "al pulsar F imprime Interactuando"},
+  "raw": {
+    "graph_name": "FKeyInteraction",
+    "nodes": [
+      {"id": "1", "type": "Event_InputAction_F", "name": "", "inputs": [], "outputs": []},
+      {"id": "2", "type": "PrintString", "name": "Interactuando", "inputs": ["1"], "outputs": []}
+    ]
+  },
+  "expect": {
+    "names": ["F", "PrintString"],
+    "types": ["InputKey", "FunctionCall"],
+    "print": "Interactuando",
+    "src_pin": "Pressed"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "_meta": {
+    "prompt": "F Key → Print compact dialect",
+    "style": "ollama_compact"
+  },
+  "raw": {
+    "graph_name": "BP-Lite",
+    "nodes": [
+      {"id": "1", "type": "InputKey", "name": "F", "inputs": [], "outputs": []},
+      {"id": "2", "type": "PrintString", "name": "Interactuando", "inputs": ["1"], "outputs": []}
+    ]
+  },
+  "expect_names": ["F", "PrintString"],
+  "expect_src_pin": "Pressed"
+}

@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "prompt": "al pulsar F imprime Interactuando",
+    "style": "canonical"
+  },
+  "raw": {
+    "graph_name": "FPrint",
+    "nodes": [
+      {
+        "id": "node_01",
+        "type": "InputKey",
+        "name": "F",
+        "inputs": {},
+        "outputs": {"Pressed": "node_02.exec_in"}
+      },
+      {
+        "id": "node_02",
+        "type": "FunctionCall",
+        "name": "PrintString",
+        "inputs": {"exec_in": "node_01.Pressed", "InString": "Interactuando"},
+        "outputs": {}
+      }
+    ]
+  }
+}

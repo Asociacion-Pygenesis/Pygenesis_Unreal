@@ -1,0 +1,27 @@
+{
+  "_meta": {
+    "prompt": "atardecer cálido desierto niebla suave",
+    "style": "lighting_canonical"
+  },
+  "raw": {
+    "environment_type": "Warm Desert Sunset",
+    "directional_light": {
+      "intensity": 8.0,
+      "temperature": 3500,
+      "rotation": [-15.0, 200.0, 0.0],
+      "cast_shadows": true
+    },
+    "sky_light": {"intensity": 0.8, "realtime_capture": true},
+    "exponential_fog": {
+      "density": 0.01,
+      "height_falloff": 0.3,
+      "inscattering_color": [1.0, 0.55, 0.25],
+      "volumetric_fog": false
+    },
+    "post_process": {
+      "exposure_compensation": 0.2,
+      "bloom_intensity": 0.8,
+      "vignette_intensity": 0.35
+    }
+  }
+}

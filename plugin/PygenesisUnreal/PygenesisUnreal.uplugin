@@ -1,0 +1,31 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "Pygenesis Unreal",
+	"Description": "Asistente IA local para Unreal Engine 5 (chat en ventana del Editor + puente GGUF).",
+	"Category": "Editor",
+	"CreatedBy": "Asociacion Pygenesis",
+	"CreatedByURL": "https://github.com/Asociacion-Pygenesis",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"EngineVersion": "5.7.0",
+	"CanContainContent": true,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "PygenesisUnreal",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "PythonScriptPlugin",
+			"Enabled": true
+		}
+	]
+}

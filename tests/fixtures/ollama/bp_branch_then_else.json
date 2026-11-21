@@ -1,0 +1,39 @@
+{
+  "_meta": {
+    "prompt": "Branch tras BeginPlay OK/FAIL",
+    "style": "canonical"
+  },
+  "raw": {
+    "graph_name": "BranchBeginPlay",
+    "nodes": [
+      {
+        "id": "node_01",
+        "type": "Event",
+        "name": "EventBeginPlay",
+        "inputs": {},
+        "outputs": {"exec_out": "node_02.exec_in"}
+      },
+      {
+        "id": "node_02",
+        "type": "Branch",
+        "name": "Branch",
+        "inputs": {"exec_in": "node_01.exec_out", "Condition": true},
+        "outputs": {"then": "node_03.exec_in", "else": "node_04.exec_in"}
+      },
+      {
+        "id": "node_03",
+        "type": "FunctionCall",
+        "name": "PrintString",
+        "inputs": {"exec_in": "node_02.then", "InString": "OK"},
+        "outputs": {}
+      },
+      {
+        "id": "node_04",
+        "type": "FunctionCall",
+        "name": "PrintString",
+        "inputs": {"exec_in": "node_02.else", "InString": "FAIL"},
+        "outputs": {}
+      }
+    ]
+  }
+}

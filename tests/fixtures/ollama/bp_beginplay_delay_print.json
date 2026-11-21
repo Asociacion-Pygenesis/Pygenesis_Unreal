@@ -1,0 +1,32 @@
+{
+  "_meta": {
+    "prompt": "BeginPlay → Delay 2s → PrintString Listo",
+    "style": "canonical"
+  },
+  "raw": {
+    "graph_name": "BP_Listo",
+    "nodes": [
+      {
+        "id": "node_01",
+        "type": "Event",
+        "name": "EventBeginPlay",
+        "inputs": {},
+        "outputs": {"exec_out": "node_02.exec_in"}
+      },
+      {
+        "id": "node_02",
+        "type": "FunctionCall",
+        "name": "Delay",
+        "inputs": {"exec_in": "node_01.exec_out", "Duration": 2.0},
+        "outputs": {"exec_out": "node_03.exec_in"}
+      },
+      {
+        "id": "node_03",
+        "type": "FunctionCall",
+        "name": "PrintString",
+        "inputs": {"exec_in": "node_02.exec_out", "InString": "Listo"},
+        "outputs": {}
+      }
+    ]
+  }
+}

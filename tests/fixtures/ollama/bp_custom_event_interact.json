@@ -1,0 +1,26 @@
+{
+  "_meta": {
+    "prompt": "Event custom Interact → Print",
+    "style": "canonical_preserve_custom"
+  },
+  "raw": {
+    "graph_name": "FInteract",
+    "nodes": [
+      {
+        "id": "node_01",
+        "type": "Event",
+        "name": "Event_Interact",
+        "inputs": {},
+        "outputs": {"exec_out": "node_02.exec_in"}
+      },
+      {
+        "id": "node_02",
+        "type": "FunctionCall",
+        "name": "PrintString",
+        "inputs": {"exec_in": "node_01.exec_out", "InString": "Interactuando"},
+        "outputs": {}
+      }
+    ]
+  },
+  "must_keep_names": ["Event_Interact", "PrintString"]
+}

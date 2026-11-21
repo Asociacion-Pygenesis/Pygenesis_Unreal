@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "prompt": "BeginPlay DestroyActor",
+    "style": "canonical"
+  },
+  "raw": {
+    "graph_name": "DestroyOnStart",
+    "nodes": [
+      {
+        "id": "node_01",
+        "type": "Event",
+        "name": "EventBeginPlay",
+        "inputs": {},
+        "outputs": {"exec_out": "node_02.exec_in"}
+      },
+      {
+        "id": "node_02",
+        "type": "FunctionCall",
+        "name": "DestroyActor",
+        "inputs": {"exec_in": "node_01.exec_out"},
+        "outputs": {}
+      }
+    ]
+  }
+}

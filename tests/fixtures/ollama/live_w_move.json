@@ -1,0 +1,16 @@
+{
+  "_meta": {"source": "testunreal1.md Ollama", "prompt": "tecla W AddMovementInput adelante"},
+  "raw": {
+    "graph_name": "BP_Character_Movement",
+    "nodes": [
+      {"id": "1", "type": "Event_InputAction_W", "name": "", "inputs": [], "outputs": []},
+      {"id": "2", "type": "Add Movement Input Forward", "name": "Avanzar Foward", "inputs": ["1"], "outputs": []}
+    ]
+  },
+  "expect": {
+    "names": ["W", "AddMovementInput"],
+    "types": ["InputKey", "FunctionCall"],
+    "direction": [1.0, 0.0, 0.0],
+    "no_beginplay": true
+  }
+}

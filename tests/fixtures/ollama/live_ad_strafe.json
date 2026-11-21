@@ -1,0 +1,16 @@
+{
+  "_meta": {"source": "testunreal1.md Ollama", "prompt": "A left D right AddMovementInput"},
+  "raw": {
+    "graph_name": "BP_Character_Movement",
+    "nodes": [
+      {"id": "1", "type": "Event_InputAction_A", "name": "", "inputs": [], "outputs": []},
+      {"id": "2", "type": "Add Movement Input Left", "name": "Izquierda", "inputs": ["1"], "outputs": []},
+      {"id": "3", "type": "Event_InputAction_D", "name": "", "inputs": [], "outputs": []},
+      {"id": "4", "type": "Add Movement Input Right", "name": "Derecha", "inputs": ["3"], "outputs": []}
+    ]
+  },
+  "expect": {
+    "names": ["A", "AddMovementInput", "D", "AddMovementInput"],
+    "types": ["InputKey", "FunctionCall", "InputKey", "FunctionCall"]
+  }
+}

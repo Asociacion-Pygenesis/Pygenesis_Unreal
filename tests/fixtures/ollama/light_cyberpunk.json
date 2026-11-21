@@ -1,0 +1,27 @@
+{
+  "_meta": {
+    "prompt": "cyberpunk nocturna lluvia bloom",
+    "style": "lighting_canonical"
+  },
+  "raw": {
+    "environment_type": "Cyberpunk Rainy Alley",
+    "directional_light": {
+      "intensity": 2.0,
+      "temperature": 7500,
+      "rotation": [-25.0, 120.0, 0.0],
+      "cast_shadows": true
+    },
+    "sky_light": {"intensity": 1.5, "realtime_capture": true},
+    "exponential_fog": {
+      "density": 0.04,
+      "height_falloff": 0.2,
+      "inscattering_color": [0.05, 0.1, 0.2],
+      "volumetric_fog": true
+    },
+    "post_process": {
+      "exposure_compensation": 0.5,
+      "bloom_intensity": 2.0,
+      "vignette_intensity": 0.4
+    }
+  }
+}
