@@ -36,13 +36,14 @@ Copy-TreeFiltered (Join-Path $RepoRoot "middleware") (Join-Path $OutRoot "middle
 
 Copy-Item (Join-Path $RepoRoot "Install.bat") (Join-Path $OutRoot "Install.bat") -Force
 Copy-Item (Join-Path $RepoRoot "LICENSE") (Join-Path $OutRoot "LICENSE") -Force -ErrorAction SilentlyContinue
-Copy-Item (Join-Path $RepoRoot "README.md") (Join-Path $OutRoot "README.md") -Force
+Copy-Item (Join-Path $PSScriptRoot "README.md") (Join-Path $OutRoot "README.md") -Force
 
 @"
-Pygenesis UnrealExpert — paquete de distribución Windows
+Pygenesis Unreal — paquete de distribución Windows
 Version: $Version
-Modelo: SuNavar/Pygenesis_Unreal (descarga en instalacion)
-Sin Companion: chat en ventana del Unreal Editor.
+Arranque: Install.bat (ventana que comprueba e instala lo que falta)
+Modelo: https://huggingface.co/SuNavar/Pygenesis-Unreal (se descarga en la instalación)
+El chat se abre dentro de Unreal Editor: Window -> Pygenesis Unreal.
 "@ | Set-Content (Join-Path $OutRoot "PACKAGE.txt") -Encoding UTF8
 
 if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }

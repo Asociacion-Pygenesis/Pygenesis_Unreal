@@ -22,15 +22,15 @@ El modelo no va en este repositorio. El instalador lo descarga de [SuNavar/Pygen
 
 ## Quick start (Windows)
 
-Hace falta Python 3.10–3.12 y Unreal Engine 5.7.
+Hace falta Unreal Engine 5.7. El release de Windows trae `Install.bat`: abre una ventana que comprueba qué está instalado y qué falta, y lo instala (Python 3.10–3.12, runtime, inferencia Vulkan o CUDA, modelo y plugin).
 
 ```powershell
-.\installer\check_environment.ps1
-.\installer\install_backend.ps1
-.\installer\install_unreal_plugin.ps1 -ProjectPath "C:\Ruta\Al\Proyecto"
+.\Install.bat
 ```
 
 Abre el `.uproject`, compila si el editor lo pide y usa **Window → Pygenesis Unreal**.
+
+Release: [v0.1.0](https://github.com/Asociacion-Pygenesis/Pygenesis_Unreal/releases/tag/v0.1.0).
 
 Modelo: **Llama 3.1 8B Instruct**, archivo `pygenesis-unreal-q4km.gguf`.
 

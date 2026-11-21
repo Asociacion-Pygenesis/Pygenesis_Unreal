@@ -9,13 +9,23 @@
 .PARAMETER Backend
   auto usa el backend escrito por la comprobación (cuda, vulkan o cpu).
 
+.PARAMETER SkipModel
+  Instala el runtime y la inferencia, y deja el GGUF para otro paso.
+
+.PARAMETER ModelOnly
+  Solo descarga el GGUF. El runtime de Python ya tiene que existir.
+
 .EXAMPLE
   .\installer\install_backend.ps1
   .\installer\install_backend.ps1 -Backend vulkan
+  .\installer\install_backend.ps1 -SkipModel
+  .\installer\install_backend.ps1 -ModelOnly
 #>
 param(
     [ValidateSet("auto", "cuda", "vulkan", "cpu")]
-    [string]$Backend = "auto"
+    [string]$Backend = "auto",
+    [switch]$SkipModel,
+    [switch]$ModelOnly
 )
 
 Set-StrictMode -Version Latest
@@ -47,8 +57,54 @@ function Set-BridgeEnvValue {
     $lines | Set-Content -Path $Path -Encoding UTF8
 }
 
+function Install-GgufModel {
+    if (-not (Test-Path $ModelSourcePath)) { throw "Falta $ModelSourcePath" }
+    $source = Get-Content $ModelSourcePath -Raw | ConvertFrom-Json
+    $modelDir = Join-Path $PygenesisHome "models"
+    New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
+    $modelPath = Join-Path $modelDir $source.filename
+    if (Test-Path $modelPath) {
+        Write-OK "Ya estaba: $modelPath"
+        return $modelPath
+    }
+    Write-Host "  $($source.repo_id) / $($source.filename)" -ForegroundColor DarkGray
+    & $RuntimePython -m pip install "huggingface-hub>=0.23,<2" --quiet
+    if ($LASTEXITCODE -ne 0) { throw "No se pudo instalar huggingface-hub." }
+    $py = @"
+from pathlib import Path
+from huggingface_hub import hf_hub_download
+dest = Path(r'$modelDir')
+dest.mkdir(parents=True, exist_ok=True)
+path = hf_hub_download(
+    repo_id=r'$($source.repo_id)',
+    filename=r'$($source.filename)',
+    revision=r'$($source.revision)',
+    local_dir=str(dest),
+)
+print(path)
+"@
+    & $RuntimePython -c $py
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $modelPath)) {
+        throw "La descarga no dejó $modelPath. Si el repo es privado, entra antes con el token de Hugging Face."
+    }
+    Write-OK $modelPath
+    return $modelPath
+}
+
 Write-Host ""
 Write-Host "Pygenesis Unreal — runtime, backend y modelo" -ForegroundColor Magenta
+
+if ($ModelOnly) {
+    if (-not (Test-Path $RuntimePython)) {
+        throw "No hay runtime en $RuntimePython. Instala primero el runtime."
+    }
+    Write-Step 1 1 "Modelo GGUF desde Hugging Face"
+    $modelPath = Install-GgufModel
+    Set-BridgeEnvValue -Path $BridgeEnv -Name "PYGENESIS_MODEL_PATH" -Value $modelPath
+    Write-Host ""
+    Write-Host "Modelo listo: $modelPath" -ForegroundColor Green
+    exit 0
+}
 
 Write-Step 1 4 "Comprobando el equipo"
 & $CheckScript
@@ -93,39 +149,17 @@ Write-Step 3 4 "Motor de inferencia ($Backend)"
 if ($LASTEXITCODE -ne 0) { exit 1 }
 Write-OK "llama-cpp-python instalado"
 
-Write-Step 4 4 "Modelo GGUF desde Hugging Face"
-if (-not (Test-Path $ModelSourcePath)) { throw "Falta $ModelSourcePath" }
-$source = Get-Content $ModelSourcePath -Raw | ConvertFrom-Json
-$modelDir = Join-Path $PygenesisHome "models"
-New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
-$modelPath = Join-Path $modelDir $source.filename
-if (Test-Path $modelPath) {
-    Write-OK "Ya estaba: $modelPath"
-} else {
-    Write-Host "  $($source.repo_id) / $($source.filename)" -ForegroundColor DarkGray
-    & $RuntimePython -m pip install "huggingface-hub>=0.23,<2" --quiet
-    if ($LASTEXITCODE -ne 0) { throw "No se pudo instalar huggingface-hub." }
-    $py = @"
-from pathlib import Path
-from huggingface_hub import hf_hub_download
-dest = Path(r'$modelDir')
-dest.mkdir(parents=True, exist_ok=True)
-path = hf_hub_download(
-    repo_id=r'$($source.repo_id)',
-    filename=r'$($source.filename)',
-    revision=r'$($source.revision)',
-    local_dir=str(dest),
-)
-print(path)
-"@
-    & $RuntimePython -c $py
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $modelPath)) {
-        throw "La descarga no dejó $modelPath. Si el repo es privado, entra antes con el token de Hugging Face."
-    }
-    Write-OK $modelPath
-}
-Set-BridgeEnvValue -Path $BridgeEnv -Name "PYGENESIS_MODEL_PATH" -Value $modelPath
 Set-BridgeEnvValue -Path $BridgeEnv -Name "PYGENESIS_GPU_BACKEND" -Value $Backend
+
+if ($SkipModel) {
+    Write-Step 4 4 "Modelo GGUF"
+    Write-OK "Omitido en este paso."
+    $modelPath = ""
+} else {
+    Write-Step 4 4 "Modelo GGUF desde Hugging Face"
+    $modelPath = Install-GgufModel
+    Set-BridgeEnvValue -Path $BridgeEnv -Name "PYGENESIS_MODEL_PATH" -Value $modelPath
+}
 
 Write-Host ""
 Write-Host "Runtime y modelo listos." -ForegroundColor Green
