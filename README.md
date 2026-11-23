@@ -1,34 +1,36 @@
 # Pygenesis UnrealExpert
 
-Asistente IA local para **Unreal Engine 5** (Blueprints / BP-Lite, iluminación / Lighting-Spec, troubleshooting).
+[Español](README.md) · [English](README.en.md)
 
-El chat se abre **dentro del Unreal Editor** como ventana del plugin. **No hay Companion.**
+Asistente de IA local para **Unreal Engine 5** (Blueprints / BP-Lite, iluminación / Lighting-Spec y resolución de problemas).
+
+El chat se abre **dentro del Unreal Editor**, como ventana del plugin. **No hay aplicación Companion.**
 
 El modelo no va en este repositorio. El instalador lo descarga de [SuNavar/Pygenesis-Unreal](https://huggingface.co/SuNavar/Pygenesis-Unreal).
 
 ---
 
-## Layout del repo
+## Estructura del repositorio
 
-| Path | Rol |
-|------|-----|
+| Ruta | Función |
+|------|---------|
 | [`backend/`](backend/) | Puente FastAPI + `llama-cpp-python` |
-| [`middleware/`](middleware/) | Encoder/decoder BP-Lite + Lighting-Spec |
-| [`plugin/`](plugin/) | Plugin Unreal Editor (ventana in-app) |
-| [`installer/`](installer/) | Instalador Windows (sin Companion) |
+| [`middleware/`](middleware/) | Codificador y decodificador de BP-Lite y Lighting-Spec |
+| [`plugin/`](plugin/) | Plugin del Unreal Editor (ventana dentro del editor) |
+| [`installer/`](installer/) | Instalador de Windows (sin Companion) |
 | [`tests/`](tests/) | Pruebas del puente y del grafo |
 
 ---
 
-## Quick start (Windows)
+## Puesta en marcha (Windows)
 
-Hace falta Unreal Engine 5.7. El release de Windows trae `Install.bat`: abre una ventana que comprueba qué está instalado y qué falta, y lo instala (Python 3.10–3.12, runtime, inferencia Vulkan o CUDA, modelo y plugin).
+Hace falta Unreal Engine 5.7. El release de Windows incluye `Install.bat`: abre una ventana que comprueba qué está instalado y qué falta, y lo instala (Python 3.10–3.12, runtime, inferencia Vulkan o CUDA, modelo y plugin).
 
 ```powershell
 .\Install.bat
 ```
 
-Abre el `.uproject`, compila si el editor lo pide y usa **Window → Pygenesis Unreal**.
+Abre el `.uproject`, compila si el editor lo pide y entra en **Window → Pygenesis Unreal**.
 
 Release: [v0.1.0](https://github.com/Asociacion-Pygenesis/Pygenesis_Unreal/releases/tag/v0.1.0).
 
@@ -38,6 +40,6 @@ Modelo: **Llama 3.1 8B Instruct**, archivo `pygenesis-unreal-q4km.gguf`.
 
 ## Privacidad
 
-Inferencia **en tu máquina**. Solo se necesita red para descargar el GGUF la primera vez.
+La inferencia se ejecuta **en tu máquina**. Solo hace falta conexión para descargar el GGUF la primera vez.
 
 Licencia: [Apache-2.0](LICENSE).
