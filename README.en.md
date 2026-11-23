@@ -32,7 +32,7 @@ Unreal Engine 5.7 is required. The Windows release includes `Install.bat`: it op
 
 Open the `.uproject`, compile if the editor asks, and go to **Window → Pygenesis Unreal**.
 
-Release: [v0.1.0](https://github.com/Asociacion-Pygenesis/Pygenesis_Unreal/releases/tag/v0.1.0).
+Release: [v0.1.1](https://github.com/Asociacion-Pygenesis/Pygenesis_Unreal/releases/tag/v0.1.1).
 
 Model: **Llama 3.1 8B Instruct**, file `pygenesis-unreal-q4km.gguf`.
 

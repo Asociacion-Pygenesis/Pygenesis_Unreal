@@ -220,54 +220,13 @@ function Ensure-LocalModelCopied {
     return $dest
 }
 
+. (Join-Path $InstallerRoot "download_model.ps1")
+
 function Ensure-ModelDownloaded {
     param([string]$PythonExe)
-    $source = Get-ModelSource
     $modelDir = Join-Path $PygenesisHome "models"
-    New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
-    $dest = Join-Path $modelDir $source.filename
-
-    if (Test-Path $dest) {
-        Write-Host "Modelo ya presente: $dest" -ForegroundColor Green
-        return $dest
-    }
-
-    Write-Host "Descargando modelo desde Hugging Face ($($source.repo_id))..." -ForegroundColor Cyan
-    Write-Host "  Archivo: $($source.filename)  (puede tardar varios minutos)" -ForegroundColor DarkGray
-    & $PythonExe -m pip install "huggingface-hub>=0.23" -q
-    if ($LASTEXITCODE -ne 0) { throw "No se pudo instalar huggingface-hub" }
-
-    $py = @"
-import json
-from pathlib import Path
-from huggingface_hub import hf_hub_download
-
-source = json.loads(Path(r'$ModelSourcePath').read_text(encoding='utf-8'))
-dest_dir = Path(r'$modelDir')
-dest_dir.mkdir(parents=True, exist_ok=True)
-path = hf_hub_download(
-    repo_id=source['repo_id'],
-    filename=source['filename'],
-    revision=source.get('revision') or 'main',
-    local_dir=str(dest_dir),
-    local_dir_use_symlinks=False,
-)
-print(path)
-"@
-    $downloaded = & $PythonExe -c $py
-    if ($LASTEXITCODE -ne 0) {
-        throw "Falló la descarga del modelo. Comprueba repo_id en installer/model.source.json y la red."
-    }
-    if (-not (Test-Path $dest)) {
-        if ($downloaded -and (Test-Path "$downloaded")) {
-            Copy-Item "$downloaded" $dest -Force
-        }
-    }
-    if (-not (Test-Path $dest)) {
-        throw "Descarga OK pero no se encontró $dest"
-    }
-    Write-Host "Modelo descargado: $dest" -ForegroundColor Green
-    return $dest
+    Write-Host "Descargando modelo desde Hugging Face..." -ForegroundColor Cyan
+    return Save-PygenesisGguf -ModelSourcePath $ModelSourcePath -DestinationDirectory $modelDir -PythonExe $PythonExe
 }
 
 function New-Shortcut {

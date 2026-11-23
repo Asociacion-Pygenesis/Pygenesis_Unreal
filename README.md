@@ -32,7 +32,7 @@ Hace falta Unreal Engine 5.7. El release de Windows incluye `Install.bat`: abre 
 
 Abre el `.uproject`, compila si el editor lo pide y entra en **Window → Pygenesis Unreal**.
 
-Release: [v0.1.0](https://github.com/Asociacion-Pygenesis/Pygenesis_Unreal/releases/tag/v0.1.0).
+Release: [v0.1.1](https://github.com/Asociacion-Pygenesis/Pygenesis_Unreal/releases/tag/v0.1.1).
 
 Modelo: **Llama 3.1 8B Instruct**, archivo `pygenesis-unreal-q4km.gguf`.
 

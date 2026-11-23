@@ -57,38 +57,13 @@ function Set-BridgeEnvValue {
     $lines | Set-Content -Path $Path -Encoding UTF8
 }
 
+. (Join-Path $InstallerRoot "download_model.ps1")
+
 function Install-GgufModel {
-    if (-not (Test-Path $ModelSourcePath)) { throw "Falta $ModelSourcePath" }
-    $source = Get-Content $ModelSourcePath -Raw | ConvertFrom-Json
     $modelDir = Join-Path $PygenesisHome "models"
-    New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
-    $modelPath = Join-Path $modelDir $source.filename
-    if (Test-Path $modelPath) {
-        Write-OK "Ya estaba: $modelPath"
-        return $modelPath
-    }
-    Write-Host "  $($source.repo_id) / $($source.filename)" -ForegroundColor DarkGray
-    & $RuntimePython -m pip install "huggingface-hub>=0.23,<2" --quiet
-    if ($LASTEXITCODE -ne 0) { throw "No se pudo instalar huggingface-hub." }
-    $py = @"
-from pathlib import Path
-from huggingface_hub import hf_hub_download
-dest = Path(r'$modelDir')
-dest.mkdir(parents=True, exist_ok=True)
-path = hf_hub_download(
-    repo_id=r'$($source.repo_id)',
-    filename=r'$($source.filename)',
-    revision=r'$($source.revision)',
-    local_dir=str(dest),
-)
-print(path)
-"@
-    & $RuntimePython -c $py
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $modelPath)) {
-        throw "La descarga no dejó $modelPath. Si el repo es privado, entra antes con el token de Hugging Face."
-    }
-    Write-OK $modelPath
-    return $modelPath
+    $python = ""
+    if (Test-Path -LiteralPath $RuntimePython) { $python = $RuntimePython }
+    return Save-PygenesisGguf -ModelSourcePath $ModelSourcePath -DestinationDirectory $modelDir -PythonExe $python
 }
 
 Write-Host ""
